@@ -1,0 +1,894 @@
+-- ============================================================
+--   ██████╗  ██████╗  ██████╗ ██████╗ 
+--   ██╔══██╗██╔═══██╗██╔═══██╗██╔══██╗
+--   ██████╔╝██║   ██║██║   ██║██████╔╝
+--   ██╔═══╝ ██║   ██║██║   ██║██╔═══╝ 
+--   ██║     ╚██████╔╝╚██████╔╝██║     
+--   ╚═╝      ╚═════╝  ╚═════╝ ╚═╝     
+--
+--   ██╗   ██╗██╗   ██╗███████╗██╗   ██╗██████╗ ██╗
+--   ╚██╗ ██╔╝██║   ██║╚══███╔╝██║   ██║██╔══██╗██║
+--    ╚████╔╝ ██║   ██║  ███╔╝ ██║   ██║██████╔╝██║
+--     ╚██╔╝  ██║   ██║ ███╔╝  ██║   ██║██╔═══╝ ██║
+--      ██║   ╚██████╔╝███████╗╚██████╔╝██║     ██║
+--      ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝     ╚═╝
+--
+--   Source: https://raw.githubusercontent.com/2tb5ydb77n-lgtm/pass/refs/heads/main/poophub
+-- ============================================================
+
+-- ┌──────────────────────────────────────────────────────────┐
+-- │  Remote source URL (this script)                         │
+-- └──────────────────────────────────────────────────────────┘
+local SOURCE_URL = "https://raw.githubusercontent.com/2tb5ydb77n-lgtm/pass/refs/heads/main/poophub"
+
+-- Self-load guard: only fetch if this file is NOT the source itself
+-- (prevents infinite recursive loadstring loops)
+if _G.__POOPHUB_LOADED__ ~= true then
+    _G.__POOPHUB_LOADED__ = true
+    pcall(function()
+        local fetched = game:HttpGet(SOURCE_URL)
+        if fetched and #fetched > 0 and not fetched:find("SOURCE_URL") then
+            loadstring(fetched)()
+        end
+    end)
+end
+
+local PoopHub = {
+    Name        = "PoopHub",
+    Author      = "Yuzupi",
+    Version     = "2.0.0",
+    Source      = SOURCE_URL,
+    Connections = {},
+    Threads     = {},
+    Cache       = {},
+    Toggles     = {
+        -- Movement
+        SpeedEnabled       = false,
+        SpeedValue         = 100,
+        JumpEnabled        = false,
+        JumpValue          = 150,
+        InfJump            = false,
+        FlyEnabled         = false,
+        FlySpeed           = 100,
+        NoclipEnabled      = false,
+        -- Visual
+        ESPEnabled         = false,
+        ESPColor           = Color3.fromRGB(0, 255, 100),
+        FullbrightEnabled  = false,
+        FPSEnabled         = false,
+        -- Combat / Player
+        GodmodeEnabled     = false,
+        AutoRespawn        = false,
+        HitboxEnabled      = false,
+        HitboxSize         = 5,
+        -- Utility
+        AntiAFK            = true,
+        ClickTP            = false,
+    }
+}
+
+-- ============================================================
+-- [ Services ]
+-- ============================================================
+local Services = setmetatable({}, {
+    __index = function(_, name) return game:GetService(name) end
+})
+
+local Players          = Services.Players
+local Workspace        = Services.Workspace
+local RunService       = Services.RunService
+local UserInput        = Services.UserInputService
+local Lighting         = Services.Lighting
+local StarterGui       = Services.StarterGui
+local CoreGui          = Services.CoreGui
+local HttpService      = Services.HttpService
+local TeleportService  = Services.TeleportService
+local VirtualUser      = Services.VirtualUser
+local TweenService     = Services.TweenService
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = Workspace.CurrentCamera
+
+-- ============================================================
+-- [ Utilities ]
+-- ============================================================
+local Utils = {}
+
+function Utils.Notify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title    = title,
+            Text     = text,
+            Duration = duration or 3
+        })
+    end)
+end
+
+function Utils.GetCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
+
+function Utils.GetHumanoid()
+    local char = Utils.GetCharacter()
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+function Utils.GetRootPart()
+    local char = Utils.GetCharacter()
+    return char:FindFirstChild("HumanoidRootPart")
+end
+
+function Utils.Create(className, props, children)
+    local inst = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        inst[k] = v
+    end
+    for _, child in ipairs(children or {}) do
+        child.Parent = inst
+    end
+    return inst
+end
+
+function Utils.FormatVector(v)
+    return string.format("(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
+end
+
+function Utils.SafeCall(fn, ...)
+    local ok, result = pcall(fn, ...)
+    if ok then return result end
+    warn("[PoopHub] SafeCall error:", result)
+    return nil
+end
+
+function Utils.DisconnectAll()
+    for _, conn in pairs(PoopHub.Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    PoopHub.Connections = {}
+end
+
+-- ============================================================
+-- [ Movement Systems ]
+-- ============================================================
+
+local Movement = {}
+
+function Movement.ApplySpeed()
+    local hum = Utils.GetHumanoid()
+    if not hum then return end
+    hum.WalkSpeed = PoopHub.Toggles.SpeedEnabled
+        and PoopHub.Toggles.SpeedValue
+        or 16
+end
+
+function Movement.ApplyJump()
+    local hum = Utils.GetHumanoid()
+    if not hum then return end
+    hum.UseJumpPower = true
+    hum.JumpPower = PoopHub.Toggles.JumpEnabled
+        and PoopHub.Toggles.JumpValue
+        or 50
+end
+
+function Movement.SetupInfJump()
+    if PoopHub.Connections.InfJump then
+        PoopHub.Connections.InfJump:Disconnect()
+    end
+    PoopHub.Connections.InfJump = UserInput.JumpRequest:Connect(function()
+        if not PoopHub.Toggles.InfJump then return end
+        local hum = Utils.GetHumanoid()
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
+end
+
+function Movement.SetupFly()
+    local root = Utils.GetRootPart()
+    if not root then return end
+
+    local vel = root:FindFirstChild("PoopFlyVelocity")
+    if PoopHub.Toggles.FlyEnabled then
+        if not vel then
+            vel          = Instance.new("BodyVelocity")
+            vel.Name     = "PoopFlyVelocity"
+            vel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+            vel.Velocity = Vector3.zero
+            vel.Parent   = root
+        end
+    else
+        if vel then vel:Destroy() end
+    end
+end
+
+function Movement.GetMoveDirection()
+    local dir = Vector3.zero
+    if UserInput:IsKeyDown(Enum.KeyCode.W) then
+        dir = dir + Camera.CFrame.LookVector
+    end
+    if UserInput:IsKeyDown(Enum.KeyCode.S) then
+        dir = dir - Camera.CFrame.LookVector
+    end
+    if UserInput:IsKeyDown(Enum.KeyCode.A) then
+        dir = dir - Camera.CFrame.RightVector
+    end
+    if UserInput:IsKeyDown(Enum.KeyCode.D) then
+        dir = dir + Camera.CFrame.RightVector
+    end
+    if UserInput:IsKeyDown(Enum.KeyCode.Space) then
+        dir = dir + Vector3.new(0, 1, 0)
+    end
+    if UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then
+        dir = dir - Vector3.new(0, 1, 0)
+    end
+    return dir
+end
+
+function Movement.Noclip()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            part.CanCollide = false
+        end
+    end
+end
+
+-- ============================================================
+-- [ Visual Systems ]
+-- ============================================================
+
+local Visual = {}
+Visual.ESPObjects = {}
+
+function Visual.CreateESP(player)
+    if player == LocalPlayer then return end
+    if Visual.ESPObjects[player] then return end
+    if not Drawing then return end
+
+    local box = Drawing.new("Square")
+    box.Thickness = 1
+    box.Color     = PoopHub.Toggles.ESPColor
+    box.Filled    = false
+    box.Visible   = false
+
+    local name = Drawing.new("Text")
+    name.Size      = 14
+    name.Center    = true
+    name.Outline   = true
+    name.Color     = Color3.fromRGB(255, 255, 255)
+    name.Visible   = false
+
+    Visual.ESPObjects[player] = { Box = box, Name = name }
+end
+
+function Visual.UpdateESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if not Visual.ESPObjects[player] then
+            Visual.CreateESP(player)
+        end
+        local obj = Visual.ESPObjects[player]
+        if not obj then continue end
+
+        if not PoopHub.Toggles.ESPEnabled then
+            obj.Box.Visible  = false
+            obj.Name.Visible = false
+            continue
+        end
+
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+
+        if root and hum and hum.Health > 0 then
+            local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+            if onScreen then
+                local size = Vector2.new(2000 / pos.Z, 3000 / pos.Z)
+                obj.Box.Size     = size
+                obj.Box.Position = Vector2.new(
+                    pos.X - size.X / 2,
+                    pos.Y - size.Y / 2
+                )
+                obj.Box.Visible  = true
+
+                obj.Name.Text    = player.Name
+                obj.Name.Position = Vector2.new(pos.X, pos.Y - size.Y / 2 - 18)
+                obj.Name.Visible = true
+            else
+                obj.Box.Visible  = false
+                obj.Name.Visible = false
+            end
+        else
+            obj.Box.Visible  = false
+            obj.Name.Visible = false
+        end
+    end
+end
+
+function Visual.ApplyFullbright()
+    if PoopHub.Toggles.FullbrightEnabled then
+        Lighting.Ambient        = Color3.fromRGB(255, 255, 255)
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness     = 3
+        Lighting.ClockTime      = 12
+        Lighting.FogEnd         = 1e6
+        Lighting.GlobalShadows  = false
+    else
+        Lighting.Ambient        = Color3.fromRGB(70, 70, 70)
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        Lighting.Brightness     = 2
+        Lighting.GlobalShadows  = true
+    end
+end
+
+-- ============================================================
+-- [ Player / Combat Systems ]
+-- ============================================================
+
+local Combat = {}
+
+function Combat.ApplyGodmode()
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if PoopHub.Toggles.GodmodeEnabled then
+            hum.MaxHealth = math.huge
+            hum.Health    = math.huge
+        else
+            hum.MaxHealth = 100
+            hum.Health    = 100
+        end
+    end
+end
+
+function Combat.SetupHitbox()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        if PoopHub.Toggles.HitboxEnabled then
+            root.Size = Vector3.new(
+                PoopHub.Toggles.HitboxSize,
+                PoopHub.Toggles.HitboxSize,
+                PoopHub.Toggles.HitboxSize
+            )
+            root.Transparency = 0.5
+        else
+            root.Size = Vector3.new(2, 2, 1)
+            root.Transparency = 1
+        end
+    end
+end
+
+function Combat.TeleportToPlayer(targetName)
+    local target = Players:FindFirstChild(targetName)
+    if not target then
+        Utils.Notify("PoopHub", "Player not found: " .. targetName)
+        return
+    end
+    local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local myRoot = Utils.GetRootPart()
+    if targetRoot and myRoot then
+        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+        Utils.Notify("PoopHub", "Teleported to " .. targetName)
+    end
+end
+
+-- ============================================================
+-- [ Utility Systems ]
+-- ============================================================
+
+local Utility = {}
+
+function Utility.Rejoin()
+    Utils.Notify("PoopHub", "Rejoining server...")
+    task.wait(0.5)
+    TeleportService:TeleportToPlaceInstance(
+        game.PlaceId,
+        game.JobId,
+        LocalPlayer
+    )
+end
+
+function Utility.ServerHop()
+    Utils.Notify("PoopHub", "Searching for new server...")
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(
+            game:HttpGet(
+                "https://games.roblox.com/v1/games/" ..
+                game.PlaceId ..
+                "/servers/Public?sortOrder=Asc&limit=100"
+            )
+        )
+    end)
+    if not success or not result then
+        Utils.Notify("PoopHub", "Server hop failed")
+        return
+    end
+    for _, server in ipairs(result.data) do
+        if server.playing < server.maxPlayers
+           and server.id ~= game.JobId then
+            TeleportService:TeleportToPlaceInstance(
+                game.PlaceId,
+                server.id,
+                LocalPlayer
+            )
+            return
+        end
+    end
+    Utils.Notify("PoopHub", "No available servers found")
+end
+
+function Utility.ResetCharacter()
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.Health = 0
+            Utils.Notify("PoopHub", "Character reset")
+        end
+    end
+end
+
+function Utility.PrintPlayerList()
+    print("[PoopHub] Player list:")
+    for i, player in ipairs(Players:GetPlayers()) do
+        print(string.format("  %d. %s (ID: %d)", i, player.Name, player.UserId))
+    end
+end
+
+function Utility.ReloadFromSource()
+    Utils.Notify("PoopHub", "Reloading from remote source...")
+    task.wait(0.5)
+    local ok, err = pcall(function()
+        local fetched = game:HttpGet(SOURCE_URL)
+        if fetched and #fetched > 0 then
+            loadstring(fetched)()
+        else
+            error("empty response")
+        end
+    end)
+    if not ok then
+        Utils.Notify("PoopHub", "Reload failed: " .. tostring(err))
+    end
+end
+
+-- ============================================================
+-- [ Event Bindings ]
+-- ============================================================
+
+RunService.RenderStepped:Connect(function()
+    if PoopHub.Toggles.FlyEnabled then
+        local root = Utils.GetRootPart()
+        local vel  = root and root:FindFirstChild("PoopFlyVelocity")
+        if vel then
+            local dir = Movement.GetMoveDirection()
+            vel.Velocity = dir.Magnitude > 0
+                and dir.Unit * PoopHub.Toggles.FlySpeed
+                or Vector3.zero
+        end
+    end
+
+    Visual.UpdateESP()
+end)
+
+RunService.Stepped:Connect(function()
+    if PoopHub.Toggles.NoclipEnabled then
+        Movement.Noclip()
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if PoopHub.Toggles.HitboxEnabled then
+        Combat.SetupHitbox()
+    end
+end)
+
+LocalPlayer.Idled:Connect(function()
+    if not PoopHub.Toggles.AntiAFK then return end
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    Movement.ApplySpeed()
+    Movement.ApplyJump()
+    Movement.SetupInfJump()
+    Movement.SetupFly()
+    Combat.ApplyGodmode()
+end)
+
+-- ============================================================
+-- [ GUI Construction ]
+-- ============================================================
+
+local GUI = {}
+
+function GUI.Destroy()
+    local existing = CoreGui:FindFirstChild("PoopHubGUI")
+    if existing then existing:Destroy() end
+end
+
+function GUI.Build()
+    GUI.Destroy()
+
+    local screenGui = Utils.Create({
+        Name           = "PoopHubGUI",
+        ResetOnSpawn   = false,
+        IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent         = CoreGui
+    }, "ScreenGui")
+
+    local main = Utils.Create({
+        Name             = "Main",
+        Size             = UDim2.fromOffset(460, 340),
+        Position         = UDim2.new(0.5, -230, 0.5, -170),
+        BackgroundColor3 = Color3.fromRGB(22, 22, 28),
+        BorderSizePixel  = 0,
+        Parent           = screenGui
+    }, "Frame")
+    Utils.Create({
+        Name         = "Corner",
+        CornerRadius = UDim.new(0, 10),
+        Parent       = main
+    }, "UICorner")
+
+    Utils.Create({
+        Name            = "Stroke",
+        Thickness       = 1.5,
+        Color           = Color3.fromRGB(80, 80, 110),
+        Transparency    = 0.3,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Parent          = main
+    }, "UIStroke")
+
+    -- Title bar
+    local title = Utils.Create({
+        Name             = "TitleBar",
+        Size             = UDim2.new(1, 0, 0, 40),
+        BackgroundColor3 = Color3.fromRGB(40, 40, 55),
+        BorderSizePixel  = 0,
+        Parent           = main
+    }, "Frame")
+    Utils.Create({
+        Parent       = title,
+        CornerRadius = UDim.new(0, 10)
+    }, "UICorner")
+
+    Utils.Create({
+        Name             = "TitleLabel",
+        Size             = UDim2.new(1, -80, 1, 0),
+        Position         = UDim2.new(0, 12, 0, 0),
+        BackgroundTransparency = 1,
+        Text             = "PoopHub  |  by Yuzupi  |  v" .. PoopHub.Version,
+        TextColor3       = Color3.fromRGB(255, 255, 255),
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 14,
+        Parent           = title
+    }, "TextLabel")
+
+    -- Close button
+    local closeBtn = Utils.Create({
+        Name             = "CloseBtn",
+        Size             = UDim2.new(0, 28, 0, 28),
+        Position         = UDim2.new(1, -34, 0, 6),
+        BackgroundColor3 = Color3.fromRGB(200, 60, 60),
+        BorderSizePixel  = 0,
+        Text             = "X",
+        TextColor3       = Color3.fromRGB(255, 255, 255),
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 14,
+        Parent           = title
+    }, "TextButton")
+    Utils.Create({
+        Parent = closeBtn,
+        CornerRadius = UDim.new(0, 6)
+    }, "UICorner")
+    closeBtn.MouseButton1Click:Connect(function()
+        screenGui.Enabled = false
+        Utils.Notify("PoopHub", "GUI hidden. Press RightShift to toggle.")
+    end)
+
+    -- Minimize button
+    local minBtn = Utils.Create({
+        Name             = "MinBtn",
+        Size             = UDim2.new(0, 28, 0, 28),
+        Position         = UDim2.new(1, -66, 0, 6),
+        BackgroundColor3 = Color3.fromRGB(200, 170, 60),
+        BorderSizePixel  = 0,
+        Text             = "_",
+        TextColor3       = Color3.fromRGB(255, 255, 255),
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 14,
+        Parent           = title
+    }, "TextButton")
+    Utils.Create({
+        Parent = minBtn,
+        CornerRadius = UDim.new(0, 6)
+    }, "UICorner")
+
+    local minimized = false
+    local savedSize = main.Size
+    minBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            savedSize = main.Size
+            main.Size = UDim2.fromOffset(460, 40)
+        else
+            main.Size = savedSize
+        end
+    end)
+
+    -- Scroll container
+    local scroll = Utils.Create({
+        Name                 = "Scroll",
+        Size                 = UDim2.new(1, -16, 1, -56),
+        Position             = UDim2.new(0, 8, 0, 48),
+        BackgroundTransparency = 1,
+        BorderSizePixel      = 0,
+        CanvasSize           = UDim2.new(0, 0, 0, 0),
+        ScrollBarThickness   = 4,
+        ScrollBarImageColor3 = Color3.fromRGB(100, 100, 140),
+        Parent               = main
+    }, "ScrollingFrame")
+
+    local layout = Utils.Create({
+        Name                  = "Layout",
+        Padding               = UDim.new(0, 6),
+        SortOrder             = Enum.SortOrder.LayoutOrder,
+        HorizontalAlignment   = Enum.HorizontalAlignment.Center,
+        Parent                = scroll
+    }, "UIListLayout")
+
+    -- Drag
+    local dragging, dragStart, startPos
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = main.Position
+        end
+    end)
+    title.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    UserInput.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    -- Toggle factory
+    local function AddToggle(label, getter, setter)
+        local btn = Utils.Create({
+            Name             = label .. "Toggle",
+            Size             = UDim2.new(1, -8, 0, 32),
+            BackgroundColor3 = Color3.fromRGB(35, 35, 45),
+            BorderSizePixel  = 0,
+            Text             = "",
+            Parent           = scroll
+        }, "TextButton")
+        Utils.Create({
+            Parent       = btn,
+            CornerRadius = UDim.new(0, 6)
+        }, "UICorner")
+
+        Utils.Create({
+            Name             = "Label",
+            Size             = UDim2.new(1, -70, 1, 0),
+            Position         = UDim2.new(0, 12, 0, 0),
+            BackgroundTransparency = 1,
+            Text             = label,
+            TextColor3       = Color3.fromRGB(210, 210, 220),
+            TextXAlignment   = Enum.TextXAlignment.Left,
+            Font             = Enum.Font.Gotham,
+            TextSize         = 13,
+            Parent           = btn
+        }, "TextLabel")
+
+        local status = Utils.Create({
+            Name             = "Status",
+            Size             = UDim2.new(0, 56, 1, 0),
+            Position         = UDim2.new(1, -60, 0, 0),
+            BackgroundTransparency = 1,
+            Text             = "OFF",
+            TextColor3       = Color3.fromRGB(255, 90, 90),
+            Font             = Enum.Font.GothamBold,
+            TextSize         = 12,
+            Parent           = btn
+        }, "TextLabel")
+
+        btn.MouseButton1Click:Connect(function()
+            local newVal = not getter()
+            setter(newVal)
+            status.Text       = newVal and "ON" or "OFF"
+            status.TextColor3 = newVal
+                and Color3.fromRGB(90, 255, 120)
+                or  Color3.fromRGB(255, 90, 90)
+        end)
+    end
+
+    -- Button factory
+    local function AddButton(label, callback, color)
+        local btn = Utils.Create({
+            Name             = label .. "Button",
+            Size             = UDim2.new(1, -8, 0, 30),
+            BackgroundColor3 = color or Color3.fromRGB(60, 60, 90),
+            BorderSizePixel  = 0,
+            Text             = label,
+            TextColor3       = Color3.fromRGB(240, 240, 250),
+            Font             = Enum.Font.Gotham,
+            TextSize         = 13,
+            Parent           = scroll
+        }, "TextButton")
+        Utils.Create({
+            Parent       = btn,
+            CornerRadius = UDim.new(0, 6)
+        }, "UICorner")
+        btn.MouseButton1Click:Connect(callback)
+    end
+
+    -- Section header
+    local function AddHeader(text)
+        Utils.Create({
+            Name             = text .. "Header",
+            Size             = UDim2.new(1, -8, 0, 24),
+            BackgroundTransparency = 1,
+            Text             = "— " .. text .. " —",
+            TextColor3       = Color3.fromRGB(140, 140, 180),
+            Font             = Enum.Font.GothamBold,
+            TextSize         = 11,
+            Parent           = scroll
+        }, "TextLabel")
+    end
+
+    -- ============ Populate ============
+    AddHeader("MOVEMENT")
+
+    AddToggle("Speed Hack", function()
+        return PoopHub.Toggles.SpeedEnabled
+    end, function(v)
+        PoopHub.Toggles.SpeedEnabled = v
+        Movement.ApplySpeed()
+    end)
+
+    AddToggle("Jump Power", function()
+        return PoopHub.Toggles.JumpEnabled
+    end, function(v)
+        PoopHub.Toggles.JumpEnabled = v
+        Movement.ApplyJump()
+    end)
+
+    AddToggle("Infinite Jump", function()
+        return PoopHub.Toggles.InfJump
+    end, function(v)
+        PoopHub.Toggles.InfJump = v
+    end)
+
+    AddToggle("Fly", function()
+        return PoopHub.Toggles.FlyEnabled
+    end, function(v)
+        PoopHub.Toggles.FlyEnabled = v
+        Movement.SetupFly()
+    end)
+
+    AddToggle("Noclip", function()
+        return PoopHub.Toggles.NoclipEnabled
+    end, function(v)
+        PoopHub.Toggles.NoclipEnabled = v
+    end)
+
+    AddHeader("VISUAL")
+
+    AddToggle("ESP", function()
+        return PoopHub.Toggles.ESPEnabled
+    end, function(v)
+        PoopHub.Toggles.ESPEnabled = v
+    end)
+
+    AddToggle("Fullbright", function()
+        return PoopHub.Toggles.FullbrightEnabled
+    end, function(v)
+        PoopHub.Toggles.FullbrightEnabled = v
+        Visual.ApplyFullbright()
+    end)
+
+    AddHeader("COMBAT")
+
+    AddToggle("Godmode", function()
+        return PoopHub.Toggles.GodmodeEnabled
+    end, function(v)
+        PoopHub.Toggles.GodmodeEnabled = v
+        Combat.ApplyGodmode()
+    end)
+
+    AddToggle("Hitbox Expander", function()
+        return PoopHub.Toggles.HitboxEnabled
+    end, function(v)
+        PoopHub.Toggles.HitboxEnabled = v
+        Combat.SetupHitbox()
+    end)
+
+    AddHeader("UTILITY")
+
+    AddToggle("Anti-AFK", function()
+        return PoopHub.Toggles.AntiAFK
+    end, function(v)
+        PoopHub.Toggles.AntiAFK = v
+    end)
+
+    AddButton("Reset Character", function()
+        Utility.ResetCharacter()
+    end, Color3.fromRGB(150, 60, 60))
+
+    AddButton("Rejoin Server", function()
+        Utility.Rejoin()
+    end, Color3.fromRGB(60, 110, 150))
+
+    AddButton("Server Hop", function()
+        Utility.ServerHop()
+    end, Color3.fromRGB(60, 150, 110))
+
+    AddButton("Print Player List", function()
+        Utility.PrintPlayerList()
+    end, Color3.fromRGB(90, 90, 120))
+
+    AddButton("Reload from Source", function()
+        Utility.ReloadFromSource()
+    end, Color3.fromRGB(120, 80, 160))
+
+    -- Update canvas size
+    task.spawn(function()
+        while scroll.Parent do
+            scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 12)
+            task.wait(0.2)
+        end
+    end)
+
+    -- Toggle GUI with RightShift
+    UserInput.InputBegan:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.RightShift then
+            screenGui.Enabled = not screenGui.Enabled
+        end
+    end)
+
+    return screenGui
+end
+
+-- ============================================================
+-- [ Initialization ]
+-- ============================================================
+
+local function Init()
+    GUI.Build()
+    Movement.SetupInfJump()
+    Movement.SetupFly()
+
+    Utils.Notify(
+        "PoopHub by Yuzupi",
+        "Loaded successfully | v" .. PoopHub.Version,
+        4
+    )
+
+    print(("[PoopHub] v%s by Yuzupi initialized"):format(PoopHub.Version))
+    print("[PoopHub] Source: " .. SOURCE_URL)
+    print("[PoopHub] Press RightShift to toggle GUI")
+end
+
+Init()
+
+_G.PoopHub = PoopHub
